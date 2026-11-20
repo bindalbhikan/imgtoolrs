@@ -94,14 +94,21 @@ pub fn shot_time(sku: &str, index: u32) -> NaiveDateTime {
 
 pub fn find_exiftool() -> Option<PathBuf> {
     let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
-    let cands = [
-        "exiftool".to_string(),
-        "exiftool.exe".to_string(),
-        format!(r"{}\Programs\ExifTool\ExifTool.exe", local),
-        r"C:\Program Files\ExifTool\ExifTool.exe".to_string(),
-        r"C:\Windows\exiftool.exe".to_string(),
-    ];
-    cands.into_iter().map(PathBuf::from).find(|p| {
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|x| x.to_path_buf())) {
+        cands.push(dir.join("exiftool.exe"));
+        cands.push(dir.join("exiftool(-k).exe"));
+    }
+    if let Ok(dir) = std::env::current_dir() {
+        cands.push(dir.join("exiftool.exe"));
+        cands.push(dir.join("exiftool(-k).exe"));
+    }
+    cands.push(PathBuf::from("exiftool"));
+    cands.push(PathBuf::from("exiftool.exe"));
+    cands.push(PathBuf::from(format!(r"{}\Programs\ExifTool\ExifTool.exe", local)));
+    cands.push(PathBuf::from(r"C:\Program Files\ExifTool\ExifTool.exe"));
+    cands.push(PathBuf::from(r"C:\Windows\exiftool.exe"));
+    cands.into_iter().find(|p| {
         Command::new(p).arg("-ver").output().map(|o| o.status.success()).unwrap_or(false)
     })
 }
@@ -185,28 +192,60 @@ fn args_for(j: &TagJob, w: u32, h: u32) -> Vec<String> {
     a
 }
 
-/// Tag many JPGs in place; exiftool is launched once per chunk of 50 files.
-pub fn tag_batch(jobs: &[TagJob]) -> Result<()> {
+/// Ek JPG ko in-place tag karta hai - bilkul Python version jaisa (ek file = ek exiftool call).
+fn tag_one(exif: &Path, j: &TagJob, n: usize) -> Result<()> {
+    let (w, h) = image::image_dimensions(&j.path)?;
+    let mut lines: Vec<String> = ["-charset", "filename=utf8", "-overwrite_original", "-q", "-m"]
+        .iter().map(|s| s.to_string()).collect();
+    lines.extend(args_for(j, w, h));
+    lines.push(j.path.to_string_lossy().to_string());
+    let argfile = std::env::temp_dir().join(format!("exif_args_{}_{}.txt", std::process::id(), n));
+    std::fs::write(&argfile, lines.join("\n") + "\n")?;
+    let out = Command::new(exif).arg("-@").arg(&argfile).output();
+    let _ = std::fs::remove_file(&argfile);
+    let out = out?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let so = String::from_utf8_lossy(&out.stdout);
+        bail!("exiftool: {} {}", err.trim(), so.trim());
+    }
+    Ok(())
+}
+
+/// Quiet version (options 1 & 2 use this).
+pub fn tag_batch(jobs: &[TagJob]) -> Result<()> { tag_jobs(jobs, false) }
+
+/// Tag many JPGs in place (4 exiftool processes parallel).
+pub fn tag_jobs(jobs: &[TagJob], verbose: bool) -> Result<()> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     if jobs.is_empty() { return Ok(()); }
     let Some(exif) = find_exiftool() else {
-        bail!("exiftool nahi mila. exiftool.exe ko is program ke saath rakho ya PATH me daalo.");
+        bail!("exiftool nahi mila. exiftool.exe (aur uska exiftool_files folder) ko image_tool.exe ke bagal me rakho ya PATH me daalo.");
     };
-    for (ci, chunk) in jobs.chunks(50).enumerate() {
-        let mut lines: Vec<String> = Vec::new();
-        for j in chunk {
-            let (w, h) = match image::image_dimensions(&j.path) { Ok(d) => d, Err(e) => { eprintln!("SKIP {}: {e}", j.path.display()); continue; } };
-            lines.extend(["-charset", "filename=utf8", "-overwrite_original", "-q", "-m"].map(String::from));
-            lines.extend(args_for(j, w, h));
-            lines.push(j.path.to_string_lossy().to_string());
-            lines.push("-execute".into());
-        }
-        let argfile = std::env::temp_dir().join(format!("exif_args_{}_{}.txt", std::process::id(), ci));
-        std::fs::write(&argfile, lines.join("\n") + "\n")?;
-        let out = Command::new(&exif).arg("-@").arg(&argfile).output();
-        let _ = std::fs::remove_file(&argfile);
-        let out = out?;
-        let err = String::from_utf8_lossy(&out.stderr);
-        if !err.trim().is_empty() { eprintln!("exiftool: {}", err.trim()); }
+    if verbose { println!("exiftool: {}", exif.display()); }
+    let ok = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(0);
+    let counter = AtomicUsize::new(0);
+    let total = jobs.len();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build()?;
+    pool.install(|| {
+        jobs.par_iter().for_each(|j| {
+            let n = counter.fetch_add(1, Ordering::Relaxed);
+            match tag_one(&exif, j, n) {
+                Ok(()) => {
+                    let d = ok.fetch_add(1, Ordering::Relaxed) + 1;
+                    if verbose { println!("tagged {}/{}  {}", d, total, j.path.display()); }
+                }
+                Err(e) => {
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    eprintln!("SKIP {}: {e}", j.path.display());
+                }
+            }
+        });
+    });
+    if verbose || failed.load(Ordering::Relaxed) > 0 {
+        println!("Metadata: {} tagged, {} failed", ok.load(Ordering::Relaxed), failed.load(Ordering::Relaxed));
     }
     Ok(())
 }
@@ -223,6 +262,10 @@ pub fn names(base: &Path, dir: &Path, file: &str) -> (String, String, String, u3
 }
 
 pub fn run_metadata(folder: &Path) -> Result<()> {
+    println!("Folder: {}", folder.display());
+    if !folder.is_dir() {
+        bail!("Folder nahi mila: {}\nPehle option 2 chalao, ya `image_tool 3 \"D:\\path\\folder\"` se folder do.", folder.display());
+    }
     let mut jobs = Vec::new();
     for e in walkdir::WalkDir::new(folder).sort_by_file_name().into_iter().flatten() {
         let p = e.path();
@@ -232,7 +275,11 @@ pub fn run_metadata(folder: &Path) -> Result<()> {
             jobs.push(TagJob { path: p.to_path_buf(), sku, brand, portal, index });
         }
     }
-    tag_batch(&jobs)?;
-    println!("{} images tagged in {}", jobs.len(), folder.display());
+    if jobs.is_empty() {
+        bail!("{} me koi .jpg/.jpeg image nahi mili.", folder.display());
+    }
+    println!("{} images mili, tagging shuru...", jobs.len());
+    tag_jobs(&jobs, true)?;
+    println!("Done: {}", folder.display());
     Ok(())
 }
