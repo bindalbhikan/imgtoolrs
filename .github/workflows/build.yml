@@ -7,13 +7,35 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      ORT_PREFER_DYNAMIC_LINK: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # ONNX Runtime khud download karte hain (ort-sys ka auto-download fail ho raha tha)
+      - name: Download ONNX Runtime 1.22.0
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip" -OutFile ort.zip
+          Expand-Archive ort.zip -DestinationPath ort
+          $d = Join-Path $env:GITHUB_WORKSPACE "ort\onnxruntime-win-x64-1.22.0"
+          Get-ChildItem "$d\lib"
+          "ORT_LIB_LOCATION=$d\lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Build release
         run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\image_tool.exe dist\
+          Copy-Item "$env:ORT_LIB_LOCATION\onnxruntime.dll" dist\
+          Copy-Item RUN.bat dist\
+
       - uses: actions/upload-artifact@v4
         with:
           name: image_tool_rs-windows
-          path: target/release/*.exe
+          path: dist/*
