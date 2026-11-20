@@ -14,15 +14,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # ONNX Runtime khud download karte hain (ort-sys ka auto-download fail ho raha tha)
+      # ONNX Runtime NuGet package se (GitHub release me win-x64 zip nahi mila)
       - name: Download ONNX Runtime 1.22.0
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip" -OutFile ort.zip
+          Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.22.0/microsoft.ml.onnxruntime.1.22.0.nupkg" -OutFile ort.zip
           Expand-Archive ort.zip -DestinationPath ort
-          $d = Join-Path $env:GITHUB_WORKSPACE "ort\onnxruntime-win-x64-1.22.0"
-          Get-ChildItem "$d\lib"
-          "ORT_LIB_LOCATION=$d\lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $d = Join-Path $env:GITHUB_WORKSPACE "ort\runtimes\win-x64\native"
+          Get-ChildItem $d
+          if (-not (Test-Path "$d\onnxruntime.lib")) { throw "onnxruntime.lib not found in $d" }
+          "ORT_LIB_LOCATION=$d" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build release
         run: cargo build --release
