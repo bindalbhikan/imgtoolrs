@@ -15,6 +15,6 @@
 - exiftool nahi mila to error aayega (Python wala pure-python fallback port nahi kiya)
 
 ## GPU / speed
-Asli bottleneck Real-ESRGAN (ONNX CPU) hai. Windows par Cargo.toml me ort features me "directml" add karo
-aur crop.rs me session builder par DirectML execution provider register karo - ye sabse bada speedup deta hai.
+Default build CPU par chalta hai (GitHub Actions par DirectML build fail hota tha).
+GPU chahiye to local par: `cargo build --release --features directml`
 `--fast` (strength 0) me upscaler load hi nahi hota.

@@ -20,9 +20,9 @@ rust_xlsxwriter = "0.79"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 
-# Windows: GPU (DirectML) on, GPU na ho to apne aap CPU par chalta hai
-[target.'cfg(windows)'.dependencies]
-ort = { version = "=2.0.0-rc.10", features = ["ndarray", "directml"] }
+# GPU (DirectML) optional: cargo build --release --features directml
+[features]
+directml = ["ort/directml"]
 
 [profile.release]
 opt-level = 3

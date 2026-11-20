@@ -43,8 +43,9 @@ impl Models {
     pub fn load(base: &Path, need_sr: bool) -> Result<Self> {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         let mk = |f: &str, gpu: bool| -> Result<Session> {
+            #[allow(unused_mut)]
             let mut b = Session::builder()?;
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "directml"))]
             if gpu {
                 use ort::execution_providers::DirectMLExecutionProvider;
                 b = b.with_execution_providers([DirectMLExecutionProvider::default().build()])?
